@@ -1,4 +1,5 @@
-![splash image](splash.png | width=60)
+<a href="url"><img src="splash.png" align="left" width="60%" ></a>
+
 # Mindful Connections — GNOME Proof of Concept
 
 > **This is an open-source proof of concept for GNOME Shell.**
