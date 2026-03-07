@@ -1,3 +1,4 @@
+![splash image](splash.png)
 # Mindful Connections — GNOME Proof of Concept
 
 > **This is an open-source proof of concept for GNOME Shell.**
