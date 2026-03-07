@@ -1,0 +1,14 @@
+{
+    "name": "Mindful Connections",
+    "description": "Click to earn 20 minutes of mindful browsing after a 3-minute pause.",
+    "uuid": "mindful-connections@gemini.dad",
+    "shell-version": [
+        "42",
+        "43",
+        "44",
+        "45",
+        "46",
+        "47"
+    ],
+    "url": "https://github.com/google-deepmind"
+}
