@@ -1,4 +1,4 @@
-![splash image](splash.png)
+![splash image](splash.png | width=60)
 # Mindful Connections — GNOME Proof of Concept
 
 > **This is an open-source proof of concept for GNOME Shell.**
@@ -26,6 +26,9 @@ LOCKED -> [click] -> WARM_UP (3 min, red) -> OPEN (20 min, green) -> COOL_DOWN (
 | Black disc filling white | COOL_DOWN | Buffer before you can restart |
 
 All timers are configurable via the in-panel menu during the OPEN state. Changes take effect on the next session.
+
+![screenshot 1](Screenshot1.png)
+![screenshot 2](Screenshot2.png)
 
 ---
 
