@@ -25,6 +25,7 @@ mkdir -p "$INSTALL_DIR"
 cp "$SCRIPT_DIR/backend/mindful_timer.py" "$INSTALL_DIR/"
 cp "$SCRIPT_DIR/backend/internet_controller.py" "$INSTALL_DIR/"
 chmod +x "$INSTALL_DIR/mindful_timer.py" "$INSTALL_DIR/internet_controller.py"
+cp -r "$SCRIPT_DIR/resources" "$INSTALL_DIR/"
 echo "      Backend installed: $INSTALL_DIR"
 
 # 2. Install GNOME extension (symlink for easy updates)

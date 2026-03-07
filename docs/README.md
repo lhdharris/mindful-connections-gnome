@@ -51,8 +51,11 @@ backend/
   internet_controller.py  iptables wrapper (Linux)
   on-sleep.sh             systemd-sleep hook — locks on suspend or hibernate
 
+resources/
+  uninstall.sh            Failsafe uninstaller — always present in install dir
+
 install.sh                One-shot installer
-uninstall.sh              Full removal, restores internet access
+uninstall.sh              Full removal — only surfaced during OPEN state
 ```
 
 The extension and daemon communicate via a JSON state file at `/tmp/mindful_connections_state.json`. The extension polls it every second and repaints a Cairo canvas. The daemon runs as a detached subprocess via passwordless `sudo`, scoped to the timer script only.
@@ -86,11 +89,15 @@ A white circle will appear in the top-right of your GNOME panel. Click it to beg
 
 ### Uninstall
 
+`uninstall.sh` is only present in the install directory (`~/.local/share/mindful-connections/`) during the **OPEN** state — it appears automatically when browsing is unlocked and disappears when the session ends. Run it then:
+
 ```bash
-./uninstall.sh
+~/.local/share/mindful-connections/uninstall.sh
 ```
 
-Removes the extension, backend, sudoers entry, and sleep hook, and immediately restores internet access.
+A failsafe copy is always available at `~/.local/share/mindful-connections/resources/uninstall.sh` if you need to uninstall outside of the OPEN window.
+
+Both scripts remove the extension, backend, sudoers entry, and sleep hook, and immediately restore internet access.
 
 ---
 

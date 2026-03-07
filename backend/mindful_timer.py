@@ -82,6 +82,26 @@ def block_internet()   -> None: get_controller().block()
 def unblock_internet() -> None: get_controller().unblock()
 
 
+# ─── Uninstall script visibility ──────────────────────────────────────────────
+
+_UNINSTALL_SRC = os.path.join(BACKEND_DIR, 'resources', 'uninstall.sh')
+_UNINSTALL_DST = os.path.join(BACKEND_DIR, 'uninstall.sh')
+
+def _show_uninstall() -> None:
+    try:
+        import shutil
+        shutil.copy2(_UNINSTALL_SRC, _UNINSTALL_DST)
+        os.chmod(_UNINSTALL_DST, 0o755)
+    except Exception:
+        pass
+
+def _hide_uninstall() -> None:
+    try:
+        os.remove(_UNINSTALL_DST)
+    except Exception:
+        pass
+
+
 # ─── Daemon loop ─────────────────────────────────────────────────────────────
 
 def _write_pid() -> None:
@@ -142,6 +162,7 @@ def _run_daemon_impl() -> None:
         open_until = time.time() + open_secs
         write_state("OPEN", open_until, total_seconds=open_secs)
         unblock_internet()
+        _show_uninstall()
 
         remaining = open_until - time.time()
         if remaining > 0:
@@ -154,6 +175,7 @@ def _run_daemon_impl() -> None:
         ends_at   = state_data.get("ends_at", 0)
         remaining = ends_at - time.time()
         if remaining > 0:
+            _show_uninstall()
             unblock_internet()
             time.sleep(remaining)
         cfg = read_config()
@@ -174,6 +196,7 @@ def _run_daemon_impl() -> None:
 
 def _enter_cool_down(cfg: dict) -> None:
     """Block internet and enter COOL_DOWN state, then transition to LOCKED."""
+    _hide_uninstall()
     block_internet()
     buffer_secs = cfg.get("buffer_seconds", DEFAULT_BUFFER_SECS)
 
@@ -189,6 +212,7 @@ def _enter_cool_down(cfg: dict) -> None:
 
 def lock_down() -> None:
     """Force immediate transition to LOCKED (used by --action lock and sleep hook)."""
+    _hide_uninstall()
     block_internet()
     write_state("LOCKED", 0, total_seconds=0)
 
