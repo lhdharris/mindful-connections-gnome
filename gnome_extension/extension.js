@@ -17,15 +17,16 @@
  * Pref changes are locked in at the START of the next session, not mid-session.
  */
 
-const St = imports.gi.St;
-const Main = imports.ui.main;
-const PanelMenu = imports.ui.panelMenu;
-const PopupMenu = imports.ui.popupMenu;
-const GLib = imports.gi.GLib;
-const GObject = imports.gi.GObject;
-const Gio = imports.gi.Gio;
-const Clutter = imports.gi.Clutter;
-const Cairo = imports.cairo;
+import St from 'gi://St';
+import GLib from 'gi://GLib';
+import GObject from 'gi://GObject';
+import Gio from 'gi://Gio';
+import Clutter from 'gi://Clutter';
+import Cairo from 'gi://cairo';
+import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
+import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
+import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 
 const BACKEND_DIR = GLib.get_home_dir() + "/.local/share/mindful-connections";
 const TIMER_SCRIPT = BACKEND_DIR + "/mindful_timer.py";
@@ -67,7 +68,7 @@ function _writeConfig(cfg) {
         file.replace_contents(bytes, null, false,
             Gio.FileCreateFlags.REPLACE_DESTINATION, null);
     } catch (e) {
-        log(`MindfulConnections: config write failed: ${e.message}`);
+        console.error(`MindfulConnections: config write failed: ${e.message}`);
     }
 }
 
@@ -172,7 +173,7 @@ const MindfulIndicator = GObject.registerClass(
 
             // Timer display (always present, centered)
             this._timerItem = new PopupMenu.PopupBaseMenuItem({ reactive: false });
-            this._timerItem._ornamentLabel.set_style('width: 0; min-width: 0;');
+            try { this._timerItem._ornamentLabel.set_style('width: 0; min-width: 0;'); } catch (_e) { }
             this._timerLabel = new St.Label({
                 text: '',
                 x_align: Clutter.ActorAlign.CENTER,
@@ -248,15 +249,13 @@ const MindfulIndicator = GObject.registerClass(
                 this._cfg.open_seconds = this._openRow.getValue() * 60;
                 this._cfg.buffer_seconds = this._bufferRow.getValue() * 60;
                 _writeConfig(this._cfg);
-                Main.notify('Mindful Connections',
-                    'Preferences saved - takes effect next session');
                 this.menu.close();
             });
         }
 
         _makeSpinRow(label, initVal, min, max) {
             let item = new PopupMenu.PopupBaseMenuItem({ reactive: false });
-            item._ornamentLabel.set_style('width: 0; min-width: 0;');
+            try { item._ornamentLabel.set_style('width: 0; min-width: 0;'); } catch (_e) { }
             let value = initVal;
 
             let lbl = new St.Label({
@@ -316,15 +315,7 @@ const MindfulIndicator = GObject.registerClass(
 
         // ─── State change ─────────────────────────────────────────────────────────
 
-        _onStateChange(_old, newState) {
-            const msgs = {
-                WARM_UP: ['Mindful Connections', 'Pause started. Take a breath.'],
-                OPEN: ['Mindful Connections', 'Internet unlocked. Browse mindfully.'],
-                COOL_DOWN: ['Mindful Connections', "Time's up. Short buffer before restart."],
-                LOCKED: ['Mindful Connections', 'Ready. Click when you want to browse again.'],
-            };
-            let m = msgs[newState];
-            if (m) Main.notify(m[0], m[1]);
+        _onStateChange(_old, _newState) {
             this.menu.close();
         }
 
@@ -406,7 +397,7 @@ const MindfulIndicator = GObject.registerClass(
                     Gio.SubprocessFlags.NONE);
                 proc.wait_async(null, null);
             } catch (e) {
-                log(`MindfulConnections: backend error [${action}]: ${e.message}`);
+                console.error(`MindfulConnections: backend error [${action}]: ${e.message}`);
                 Main.notify('Mindful Connections Error', 'Could not run backend. Check sudoers setup.');
             }
         }
@@ -425,18 +416,14 @@ const MindfulIndicator = GObject.registerClass(
 
 // ─── Extension lifecycle ──────────────────────────────────────────────────────
 
-let _indicator = null;
+export default class MindfulConnectionsExtension extends Extension {
+    enable() {
+        this._indicator = new MindfulIndicator();
+        Main.panel.addToStatusArea(this.uuid, this._indicator, 1, 'right');
+    }
 
-function init() { }
-
-function enable() {
-    _indicator = new MindfulIndicator();
-    Main.panel.addToStatusArea('mindful-connections', _indicator, 1, 'right');
-}
-
-function disable() {
-    if (_indicator !== null) {
-        _indicator.destroy();
-        _indicator = null;
+    disable() {
+        this._indicator?.destroy();
+        this._indicator = null;
     }
 }
