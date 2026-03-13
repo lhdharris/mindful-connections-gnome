@@ -239,13 +239,16 @@ def action_start(in_process: bool = False) -> None:
     else:
         # Spawn a detached daemon subprocess (used by the GNOME extension via sudo).
         _kill_existing_daemon()
+        LOG_FILE = os.path.join(BASE_DIR, "mindful_daemon.log")
+        log_fd = open(LOG_FILE, "a")
         subprocess.Popen(
             [sys.executable, __file__, "--action", "daemon"],
             stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=log_fd,
+            stderr=log_fd,
             start_new_session=True,
         )
+        log_fd.close()
 
     print(f"WARM_UP started ({wait_secs}s cooldown).")
 

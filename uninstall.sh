@@ -26,9 +26,9 @@ echo "[3/4] Removing suspend hook and sudoers..."
 sudo rm -f "$SLEEP_HOOK_DST"
 sudo rm -f "$SUDOERS_FILE"
 
-# Remove installed backend and state
+# Remove installed backend and state (sudo needed: root may own __pycache__ files)
 echo "[4/4] Removing installed backend..."
-rm -rf "$INSTALL_DIR"
+sudo rm -rf "$INSTALL_DIR"
 sudo rm -f /tmp/mindful_connections_state.json
 
 echo ""

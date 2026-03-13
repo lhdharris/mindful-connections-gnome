@@ -87,6 +87,7 @@ const MindfulIndicator = GObject.registerClass(
             this._menuRefreshId = null;   // live update timer while info menu is open
             this._menuMode = null;        // 'info' | 'prefs' | null
             this._cfg = _readConfig();
+            this._recovering = false;     // true while a recovery lock is in flight
 
             // Canvas — Cairo drawing
             this._canvas = new St.DrawingArea({ width: BTN_SIZE, height: BTN_SIZE });
@@ -135,6 +136,20 @@ const MindfulIndicator = GObject.registerClass(
             let newState = data.state || 'LOCKED';
             let endsAt = data.ends_at || 0;
             let totalSec = data.total_seconds || DEFAULT_WAIT_SECS;
+
+            // Stuck-state recovery: if the timer has expired but the daemon never
+            // advanced the state (e.g. it crashed), force a lock so the user isn't
+            // permanently locked out with no way to click-to-start.
+            const GRACE_SECS = 15;
+            let now = Date.now() / 1000;
+            if (!this._recovering && newState !== 'LOCKED' &&
+                    endsAt > 0 && now > endsAt + GRACE_SECS) {
+                this._recovering = true;
+                this._runBackend('lock');
+            }
+            if (newState === 'LOCKED') {
+                this._recovering = false;
+            }
 
             if (newState !== this._state) {
                 this._onStateChange(this._state, newState);

@@ -19,8 +19,20 @@ USER="$(whoami)"
 echo "=== Mindful Connections — Installer ==="
 echo ""
 
+# 0. Check / install dependencies
+echo "[0/7] Checking dependencies..."
+MISSING_PKGS=()
+command -v python3 >/dev/null 2>&1 || MISSING_PKGS+=("python3")
+command -v nft     >/dev/null 2>&1 || MISSING_PKGS+=("nftables")
+if [ ${#MISSING_PKGS[@]} -gt 0 ]; then
+    echo "      Installing missing packages: ${MISSING_PKGS[*]}"
+    sudo apt-get install -y "${MISSING_PKGS[@]}"
+else
+    echo "      Dependencies OK (python3, nftables)."
+fi
+
 # 1. Install backend scripts
-echo "[1/6] Installing backend to $INSTALL_DIR..."
+echo "[1/7] Installing backend to $INSTALL_DIR..."
 mkdir -p "$INSTALL_DIR"
 cp "$SCRIPT_DIR/backend/mindful_timer.py" "$INSTALL_DIR/"
 cp "$SCRIPT_DIR/backend/internet_controller.py" "$INSTALL_DIR/"
@@ -29,7 +41,7 @@ cp -r "$SCRIPT_DIR/resources" "$INSTALL_DIR/"
 echo "      Backend installed: $INSTALL_DIR"
 
 # 2. Install GNOME extension (symlink for easy updates)
-echo "[2/6] Installing GNOME extension..."
+echo "[2/7] Installing GNOME extension..."
 mkdir -p "$(dirname "$EXT_DEST")"
 if [ -L "$EXT_DEST" ] || [ -d "$EXT_DEST" ]; then
     rm -rf "$EXT_DEST"
@@ -38,26 +50,27 @@ ln -s "$EXT_SOURCE" "$EXT_DEST"
 echo "      Linked: $EXT_DEST -> $EXT_SOURCE"
 
 # 3. Add sudoers entry (passwordless sudo for the timer script only)
-echo "[3/6] Setting up sudoers (will prompt for your password)..."
+echo "[3/7] Setting up sudoers (will prompt for your password)..."
 SUDOERS_LINE="$USER ALL=(root) NOPASSWD: /usr/bin/python3 $TIMER_SCRIPT *"
 echo "$SUDOERS_LINE" | sudo tee "$SUDOERS_FILE" > /dev/null
 sudo chmod 440 "$SUDOERS_FILE"
 echo "      Sudoers entry written to $SUDOERS_FILE"
 
 # 4. Install systemd sleep hook (lock on suspend/hibernate/lid-close)
-echo "[4/6] Installing suspend/hibernate lock hook..."
+echo "[4/7] Installing suspend/hibernate lock hook..."
 
+sudo mkdir -p "$(dirname "$SLEEP_HOOK_DST")"
 sed "s|__INSTALL_DIR__|$INSTALL_DIR|g" "$SLEEP_HOOK_SRC" | sudo tee "$SLEEP_HOOK_DST" > /dev/null
 sudo chmod 755 "$SLEEP_HOOK_DST"
 echo "      Hook installed: $SLEEP_HOOK_DST"
 
 # 5. Ensure internet starts in LOCKED state (apply block rules now)
-echo "[5/6] Applying initial internet lock..."
+echo "[5/7] Applying initial internet lock..."
 sudo python3 "$TIMER_SCRIPT" --action lock || true
 echo "      Internet browsing is now blocked."
 
 # 6. Enable the extension
-echo "[6/6] Enabling extension..."
+echo "[6/7] Enabling extension..."
 gnome-extensions enable "$UUID" 2>/dev/null || true
 
 echo ""

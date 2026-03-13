@@ -4,6 +4,7 @@ import argparse
 import platform
 import abc
 import os
+import shutil
 
 class FirewallController(abc.ABC):
     @abc.abstractmethod
@@ -18,6 +19,55 @@ class FirewallController(abc.ABC):
     def is_blocked(self) -> bool:
         pass
 
+class NftablesController(FirewallController):
+    """Firewall controller using nftables (default on Debian 12+, Ubuntu 22.04+)."""
+    TABLE = "mindful_connections"
+
+    @staticmethod
+    def _find_nft() -> str:
+        for candidate in ["nft", "/usr/sbin/nft", "/sbin/nft"]:
+            found = shutil.which(candidate)
+            if found:
+                return found
+        raise FileNotFoundError(
+            "nft not found. Install it with: sudo apt install nftables"
+        )
+
+    def _run(self, args: list[str]):
+        result = subprocess.run(args, capture_output=True, text=True)
+        return result.returncode, (result.stdout + result.stderr).strip()
+
+    def _run_script(self, script: str):
+        result = subprocess.run(
+            [self._find_nft(), "-f", "-"],
+            input=script, capture_output=True, text=True,
+        )
+        return result.returncode, (result.stdout + result.stderr).strip()
+
+    def block(self):
+        # Delete any existing table so we start clean (ignore errors)
+        self._run([self._find_nft(), "delete", "table", "ip", self.TABLE])
+        script = (
+            f"table ip {self.TABLE} {{\n"
+            f"    chain output {{\n"
+            f"        type filter hook output priority 0; policy accept;\n"
+            f"        tcp dport {{ 80, 443 }} reject with tcp reset\n"
+            f"        udp dport 443 reject\n"
+            f"    }}\n"
+            f"}}\n"
+        )
+        code, out = self._run_script(script)
+        if code != 0:
+            raise RuntimeError(f"nft block failed: {out}")
+
+    def unblock(self):
+        self._run([self._find_nft(), "delete", "table", "ip", self.TABLE])
+
+    def is_blocked(self) -> bool:
+        code, _ = self._run([self._find_nft(), "list", "table", "ip", self.TABLE])
+        return code == 0
+
+
 class LinuxController(FirewallController):
     RULES = [
         ["-p", "tcp", "--dport", "80",  "-j", "REJECT", "--reject-with", "tcp-reset"],
@@ -25,24 +75,37 @@ class LinuxController(FirewallController):
         ["-p", "udp", "--dport", "443", "-j", "REJECT"],
     ]
 
+    @staticmethod
+    def _find_iptables() -> str:
+        for candidate in ["iptables", "/usr/sbin/iptables", "/sbin/iptables"]:
+            found = shutil.which(candidate)
+            if found:
+                return found
+        raise FileNotFoundError(
+            "iptables not found. Install it with: sudo apt install iptables"
+        )
+
     def _run(self, args: list[str]):
         result = subprocess.run(args, capture_output=True, text=True)
         return result.returncode, (result.stdout + result.stderr).strip()
 
     def _rule_exists(self, rule: list[str]) -> bool:
-        code, _ = self._run(["iptables", "-C", "OUTPUT"] + rule)
+        ipt = self._find_iptables()
+        code, _ = self._run([ipt, "-C", "OUTPUT"] + rule)
         return code == 0
 
     def block(self):
+        ipt = self._find_iptables()
         for rule in self.RULES:
             if not self._rule_exists(rule):
-                self._run(["iptables", "-I", "OUTPUT"] + rule)
+                self._run([ipt, "-I", "OUTPUT"] + rule)
 
     def unblock(self):
+        ipt = self._find_iptables()
         for rule in self.RULES:
             for _ in range(5):
                 if self._rule_exists(rule):
-                    self._run(["iptables", "-D", "OUTPUT"] + rule)
+                    self._run([ipt, "-D", "OUTPUT"] + rule)
                 else:
                     break
 
@@ -111,6 +174,9 @@ class MacController(FirewallController):
 def get_controller() -> FirewallController:
     os_name = platform.system()
     if os_name == "Linux":
+        # Prefer nftables (default on Debian 12+, Ubuntu 22.04+); fall back to iptables.
+        if shutil.which("nft"):
+            return NftablesController()
         return LinuxController()
     elif os_name == "Windows":
         return WindowsController()
