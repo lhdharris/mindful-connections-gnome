@@ -1,6 +1,6 @@
 {
     "name": "Mindful Connections",
-    "description": "Click to earn 20 minutes of mindful browsing after a 3-minute pause.",
+    "description": "Enforces intentional internet use. Clicking the panel icon starts a warm-up timer before HTTP/HTTPS traffic is unblocked, then locks it again after a cool-down. Timings are configurable in preferences.",
     "uuid": "mindful-connections@gemini.dad",
     "shell-version": [
         "45",

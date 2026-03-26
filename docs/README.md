@@ -20,7 +20,7 @@ Mindful Connections enforces intentional internet use by requiring a short pause
 ### Timer flow
 
 ```
-LOCKED → [click] → WARM_UP (3 min) → OPEN (20 min) → COOL_DOWN (1 min) → LOCKED
+LOCKED → [click] → WARM_UP (1 min) → OPEN (20 min) → COOL_DOWN (1 min) → LOCKED
 ```
 
 | Icon | State | Meaning |
@@ -48,7 +48,7 @@ gnome_extension/
 
 backend/
   mindful_timer.py        State machine daemon — manages the full timer cycle
-  internet_controller.py  iptables wrapper (Linux)
+  internet_controller.py  nftables/iptables wrapper — auto-detected at runtime
   on-sleep.sh             systemd-sleep hook — locks on suspend or hibernate
 
 resources/
@@ -64,9 +64,9 @@ The extension and daemon communicate via a JSON state file at `/tmp/mindful_conn
 
 ## Requirements
 
-- **GNOME Shell** 42–47
+- **GNOME Shell** 45–48
 - **Python 3** (standard library only — no pip dependencies)
-- **iptables**
+- **nftables** (preferred) or **iptables** — auto-detected at runtime
 - Linux with systemd (tested on Debian, Ubuntu, Fedora)
 
 ---
@@ -104,8 +104,8 @@ Both scripts remove the extension, backend, sudoers entry, and sleep hook, and i
 ## How it works
 
 1. `install.sh` copies the Python backend to `~/.local/share/mindful-connections/`, symlinks the extension into `~/.local/share/gnome-shell/extensions/`, and writes a narrowly-scoped sudoers rule.
-2. Clicking the panel icon runs `sudo python3 mindful_timer.py --action start`, which applies `iptables` rules, writes the initial state, and spawns a detached daemon.
-3. The daemon drives the `WARM_UP → OPEN → COOL_DOWN → LOCKED` cycle, toggling `iptables` at each transition.
+2. Clicking the panel icon runs `sudo python3 mindful_timer.py --action start`, which applies firewall rules (nftables or iptables, auto-detected), writes the initial state, and spawns a detached daemon.
+3. The daemon drives the `WARM_UP → OPEN → COOL_DOWN → LOCKED` cycle, toggling the firewall at each transition.
 4. The `systemd-sleep` hook locks the timer immediately on suspend or hibernate.
 5. The extension re-reads the state file every second, repaints the Cairo icon, and fires GNOME notifications on each state change.
 
@@ -115,8 +115,7 @@ Both scripts remove the extension, backend, sudoers entry, and sleep hook, and i
 
 This is a **proof of concept**, not a hardened security tool. A determined user can bypass it trivially. The intent is habit formation, not enforcement.
 
-- Requires `iptables`. Systems on `nftables` exclusively will need adaptation.
-- GNOME Shell 48+ may require API updates — the `imports.gi.*` style is from the GNOME 42–45 era.
+- Uses ES module syntax — requires GNOME Shell 45+.
 - Not listed on the GNOME Extensions website — manual install only.
 
 ---
@@ -125,4 +124,4 @@ This is a **proof of concept**, not a hardened security tool. A determined user 
 
 MIT — see [LICENSE](../LICENSE).
 
-Contributions welcome. If you adapt this for nftables, GNOME 48+, or another desktop environment, open a PR.
+Contributions welcome. If you adapt this for another desktop environment, open a PR.

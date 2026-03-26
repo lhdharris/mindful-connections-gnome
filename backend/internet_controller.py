@@ -61,7 +61,10 @@ class NftablesController(FirewallController):
             raise RuntimeError(f"nft block failed: {out}")
 
     def unblock(self):
-        self._run([self._find_nft(), "delete", "table", "ip", self.TABLE])
+        code, out = self._run([self._find_nft(), "delete", "table", "ip", self.TABLE])
+        # Verify the table is actually gone (exit code 1 is fine — table didn't exist)
+        if self.is_blocked():
+            raise RuntimeError(f"nft unblock failed — table still present after delete: {out}")
 
     def is_blocked(self) -> bool:
         code, _ = self._run([self._find_nft(), "list", "table", "ip", self.TABLE])

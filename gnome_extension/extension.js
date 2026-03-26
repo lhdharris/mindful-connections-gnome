@@ -4,7 +4,7 @@
  * Left-click or Right-click:
  *   LOCKED    → start timer
  *   WARM_UP   → menu (timer only)
- *   OPEN      → menu (timer + prefs)
+ *   OPEN      → menu (timer only)
  *   COOL_DOWN → menu (timer only)
  *
  * States:
@@ -13,8 +13,8 @@
  *   OPEN      — green pie draining clockwise (browse window).
  *   COOL_DOWN — black disc filling with white (buffer).
  *
- * Preferences only editable in OPEN state (grayed out elsewhere).
- * Pref changes are locked in at the START of the next session, not mid-session.
+ * Session settings are edited via the GNOME Extensions preferences window.
+ * Widgets are insensitive unless the current state is OPEN.
  */
 
 import St from 'gi://St';
@@ -36,6 +36,8 @@ const CONFIG_FILE = "/tmp/mindful_connections_config.json";
 const DEFAULT_WAIT_SECS = 3 * 60;
 const DEFAULT_OPEN_SECS = 20 * 60;
 const DEFAULT_BUFFER_SECS = 1 * 60;
+const DEFAULT_LONG_BREAK_SESSIONS = 3;
+const DEFAULT_LONG_BREAK_SECS = 20 * 60;
 const BTN_SIZE = 26;
 
 // ─── Config helpers ───────────────────────────────────────────────────────────
@@ -51,6 +53,11 @@ function _readConfig() {
                 open_seconds: d.open_seconds || DEFAULT_OPEN_SECS,
                 buffer_seconds: d.buffer_seconds !== undefined
                     ? d.buffer_seconds : DEFAULT_BUFFER_SECS,
+                long_break_sessions: d.long_break_sessions !== undefined
+                    ? d.long_break_sessions : DEFAULT_LONG_BREAK_SESSIONS,
+                long_break_seconds: d.long_break_seconds !== undefined
+                    ? d.long_break_seconds : DEFAULT_LONG_BREAK_SECS,
+                routines: Array.isArray(d.routines) ? d.routines : null,
             };
         }
     } catch (_e) { }
@@ -58,18 +65,10 @@ function _readConfig() {
         wait_seconds: DEFAULT_WAIT_SECS,
         open_seconds: DEFAULT_OPEN_SECS,
         buffer_seconds: DEFAULT_BUFFER_SECS,
+        long_break_sessions: DEFAULT_LONG_BREAK_SESSIONS,
+        long_break_seconds: DEFAULT_LONG_BREAK_SECS,
+        routines: null,
     };
-}
-
-function _writeConfig(cfg) {
-    try {
-        let file = Gio.File.new_for_path(CONFIG_FILE);
-        let bytes = new TextEncoder().encode(JSON.stringify(cfg));
-        file.replace_contents(bytes, null, false,
-            Gio.FileCreateFlags.REPLACE_DESTINATION, null);
-    } catch (e) {
-        console.error(`MindfulConnections: config write failed: ${e.message}`);
-    }
 }
 
 // ─── Indicator ────────────────────────────────────────────────────────────────
@@ -84,10 +83,15 @@ const MindfulIndicator = GObject.registerClass(
             this._endsAt = 0;
             this._totalSec = DEFAULT_WAIT_SECS;
             this._timerId = null;
-            this._menuRefreshId = null;   // live update timer while info menu is open
-            this._menuMode = null;        // 'info' | 'prefs' | null
+            this._menuRefreshId = null;   // live update timer while menu is open
             this._cfg = _readConfig();
+            this._sessionCount = 0;
             this._recovering = false;     // true while a recovery lock is in flight
+            this._routineActive = false;
+            this._routineType = 'open';   // 'open' or 'blocked'
+            this._routineEndsAt = 0;
+            this._routineStartAt = 0;
+            this._lastRoutineSlot = -1;   // slotKey (day*48+slot) of last detected routine
 
             // Canvas — Cairo drawing
             this._canvas = new St.DrawingArea({ width: BTN_SIZE, height: BTN_SIZE });
@@ -118,6 +122,8 @@ const MindfulIndicator = GObject.registerClass(
             if (t === Clutter.EventType.BUTTON_PRESS ||
                 t === Clutter.EventType.TOUCH_BEGIN) {
                 if (this._state === 'LOCKED') {
+                    if (this._routineActive && this._routineType === 'blocked')
+                        return Clutter.EVENT_STOP;
                     this._runBackend('start');
                     return Clutter.EVENT_STOP;
                 }
@@ -127,6 +133,60 @@ const MindfulIndicator = GObject.registerClass(
                 return Clutter.EVENT_STOP;
             }
             return super.vfunc_event(event);
+        }
+
+        // ─── Routine detection ────────────────────────────────────────────────────
+
+        _checkRoutineSlot() {
+            const routines = this._cfg.routines;
+            if (!Array.isArray(routines)) return { active: false, endsAt: 0, startsAt: 0, slotKey: -1 };
+
+            const now = new Date();
+            const day = now.getDay();   // 0=Sun … 6=Sat (matches Python Sun=0 convention)
+            const slot = now.getHours() * 2 + Math.floor(now.getMinutes() / 30);
+            const slotKey = day * 48 + slot;
+
+            // Normalize: old booleans (true→1), numbers 0/1/2
+            const _norm = v => { if (v === true) return 1; return Number(v) || 0; };
+            let slotVal = 0;
+            try { slotVal = _norm(routines[day][slot]); } catch (_e) {}
+            if (!slotVal) return { active: false, endsAt: 0, startsAt: 0, slotKey };
+
+            const type = slotVal === 2 ? 'blocked' : 'open';
+
+            // Walk backward — stop when adjacent slot has a different value
+            let sd = day, ss = slot;
+            for (let i = 0; i < 7 * 48; i++) {
+                let ps = ss - 1, pd = sd;
+                if (ps < 0) { ps = 47; pd = (sd - 1 + 7) % 7; }
+                let pv = 0;
+                try { pv = _norm(routines[pd][ps]); } catch (_e) {}
+                if (pv !== slotVal) break;
+                sd = pd; ss = ps;
+            }
+
+            // Walk forward — stop when adjacent slot has a different value
+            let d = day, s = slot;
+            for (let i = 0; i < 7 * 48; i++) {
+                let ns = s + 1, nd = d;
+                if (ns >= 48) { ns = 0; nd = (d + 1) % 7; }
+                let nv = 0;
+                try { nv = _norm(routines[nd][ns]); } catch (_e) {}
+                if (nv !== slotVal) break;
+                d = nd; s = ns;
+            }
+
+            const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+            const daysBack = (day - sd + 7) % 7;
+            const startMinutes = ss * 30;
+            let startsAt = (midnight.getTime() - daysBack * 86400 * 1000 + startMinutes * 60 * 1000) / 1000;
+
+            const daysOffset = (d - day + 7) % 7;
+            const endMinutes = (s + 1) * 30;
+            let endsAt = (midnight.getTime() + (daysOffset * 86400 + endMinutes * 60) * 1000) / 1000;
+            if (endsAt <= Date.now() / 1000) endsAt += 7 * 86400;
+
+            return { active: true, type, endsAt, startsAt, slotKey };
         }
 
         // ─── State polling ────────────────────────────────────────────────────────
@@ -162,6 +222,31 @@ const MindfulIndicator = GObject.registerClass(
             this._state = newState;
             this._endsAt = endsAt;
             this._totalSec = totalSec;
+            this._sessionCount = data.session_count !== undefined ? data.session_count : 0;
+
+            // Check if current time falls in a routine slot
+            const routineInfo = this._checkRoutineSlot();
+            const wasRoutineActive = this._routineActive;
+            this._routineActive = routineInfo.active;
+            this._routineType   = routineInfo.type || 'open';
+            this._routineEndsAt = routineInfo.endsAt;
+
+            // During a blocked slot, keep the backend locked
+            if (routineInfo.active && routineInfo.type === 'blocked' && newState !== 'LOCKED') {
+                this._runBackend('lock');
+            }
+
+            if (routineInfo.active) {
+                this._routineStartAt = routineInfo.startsAt;
+                if (routineInfo.slotKey !== this._lastRoutineSlot) {
+                    // New slot boundary: refresh config and tell backend to open
+                    this._lastRoutineSlot = routineInfo.slotKey;
+                    this._cfg = _readConfig();
+                    this._runBackend('routine-check');
+                }
+            } else {
+                this._lastRoutineSlot = -1;
+            }
 
             // Update live info labels if menu is open
             if (this.menu.isOpen) {
@@ -186,7 +271,7 @@ const MindfulIndicator = GObject.registerClass(
             this._stopMenuRefresh();
             this.menu.removeAll();
 
-            // Timer display (always present, centered)
+            // Timer display (centered)
             this._timerItem = new PopupMenu.PopupBaseMenuItem({ reactive: false });
             try { this._timerItem._ornamentLabel.set_style('width: 0; min-width: 0;'); } catch (_e) { }
             this._timerLabel = new St.Label({
@@ -197,17 +282,6 @@ const MindfulIndicator = GObject.registerClass(
             });
             this._timerItem.add_child(this._timerLabel);
             this.menu.addMenuItem(this._timerItem);
-
-            if (this._state === 'OPEN') {
-                this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-                this._buildPrefsWidgets();
-                this.menu.addMenuItem(this._waitRow.item);
-                this.menu.addMenuItem(this._openRow.item);
-                this.menu.addMenuItem(this._bufferRow.item);
-                this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-                this.menu.addMenuItem(this._saveItem);
-                this._setPrefsEnabled(true);
-            }
 
             this._updateMenuLabels();
 
@@ -224,6 +298,16 @@ const MindfulIndicator = GObject.registerClass(
         _updateMenuLabels() {
             if (!this._timerItem) return;
 
+            if (this._routineActive) {
+                let rem = Math.max(0, Math.ceil(this._routineEndsAt - Date.now() / 1000));
+                let m = Math.floor(rem / 60);
+                let s = rem % 60;
+                let timeStr = `${m}:${String(s).padStart(2, '0')}`;
+                let label = this._routineType === 'blocked' ? 'Routine Lockout' : 'Routine';
+                this._timerLabel.set_text(`⏲  ${timeStr} - ${label}`);
+                return;
+            }
+
             const stageNames = {
                 WARM_UP: 'Warming Up',
                 OPEN: 'Open',
@@ -236,7 +320,13 @@ const MindfulIndicator = GObject.registerClass(
             let timeStr = `${m}:${String(s).padStart(2, '0')}`;
             let stageName = stageNames[this._state] || this._state;
 
-            this._timerLabel.set_text(`⏲  ${timeStr} - ${stageName}`);
+            let sessionStr = '';
+            if (this._state === 'OPEN') {
+                let total = this._cfg.long_break_sessions || DEFAULT_LONG_BREAK_SESSIONS;
+                let current = (this._sessionCount % total) + 1;
+                sessionStr = `  (${current}/${total})`;
+            }
+            this._timerLabel.set_text(`⏲  ${timeStr} - ${stageName}${sessionStr}`);
         }
 
         _stopMenuRefresh() {
@@ -244,88 +334,6 @@ const MindfulIndicator = GObject.registerClass(
                 GLib.source_remove(this._menuRefreshId);
                 this._menuRefreshId = null;
             }
-        }
-
-        // ─── Prefs building (OPEN state only) ─────────────────────────────────────
-
-        _buildPrefsWidgets() {
-            let cfg = _readConfig();
-            let waitMin = Math.round(cfg.wait_seconds / 60);
-            let openMin = Math.round(cfg.open_seconds / 60);
-            let bufMin = Math.round(cfg.buffer_seconds / 60);
-
-            this._waitRow = this._makeSpinRow('Warm up', waitMin, 1, 60);
-            this._openRow = this._makeSpinRow('Open browsing', openMin, 1, 120);
-            this._bufferRow = this._makeSpinRow('Cool down', bufMin, 0, 30);
-
-            this._saveItem = new PopupMenu.PopupMenuItem('Save settings');
-            this._saveItem.connect('activate', () => {
-                this._cfg.wait_seconds = this._waitRow.getValue() * 60;
-                this._cfg.open_seconds = this._openRow.getValue() * 60;
-                this._cfg.buffer_seconds = this._bufferRow.getValue() * 60;
-                _writeConfig(this._cfg);
-                this.menu.close();
-            });
-        }
-
-        _makeSpinRow(label, initVal, min, max) {
-            let item = new PopupMenu.PopupBaseMenuItem({ reactive: false });
-            try { item._ornamentLabel.set_style('width: 0; min-width: 0;'); } catch (_e) { }
-            let value = initVal;
-
-            let lbl = new St.Label({
-                text: label + ':',
-                style: 'min-width: 110px; color: #ccc;',
-                y_align: Clutter.ActorAlign.CENTER,
-            });
-
-            let btnStyle = [
-                'width: 26px; height: 26px; border-radius: 13px;',
-                'background-color: rgba(255,255,255,0.12);',
-                'color: #fff; font-size: 16px; font-weight: bold;',
-                'text-align: center; padding: 0;',
-            ].join(' ');
-
-            let btnMinus = new St.Button({ label: '−', style: btnStyle });
-            let valLbl = new St.Label({
-                text: String(value) + ' min',
-                style: 'min-width: 52px; text-align: center; color: #fff;',
-                y_align: Clutter.ActorAlign.CENTER,
-            });
-            let btnPlus = new St.Button({ label: '+', style: btnStyle });
-
-            const refresh = () => valLbl.set_text(String(value) + ' min');
-            btnMinus.connect('clicked', () => { if (value > min) { value--; refresh(); } });
-            btnPlus.connect('clicked', () => { if (value < max) { value++; refresh(); } });
-
-            item.add_child(lbl);
-            item.add_child(btnMinus);
-            item.add_child(valLbl);
-            item.add_child(btnPlus);
-
-            const setEnabled = (on) => {
-                const a = on ? 255 : 70;
-                btnMinus.reactive = on; btnMinus.opacity = a;
-                btnPlus.reactive = on; btnPlus.opacity = a;
-                valLbl.opacity = a;
-                lbl.opacity = a;
-            };
-
-            return {
-                item,
-                getValue: () => value,
-                setValue: (v) => { value = v; refresh(); },
-                setEnabled,
-            };
-        }
-
-        _setPrefsEnabled(on) {
-            if (!this._waitRow) return;
-            this._waitRow.setEnabled(on);
-            this._openRow.setEnabled(on);
-            this._bufferRow.setEnabled(on);
-            this._saveItem.setSensitive(on);
-            this._saveItem.opacity = on ? 255 : 70;
         }
 
         // ─── State change ─────────────────────────────────────────────────────────
@@ -361,6 +369,32 @@ const MindfulIndicator = GObject.registerClass(
                     let s = -Math.PI / 2;
                     cr.moveTo(cx, cy);
                     cr.arc(cx, cy, r - 2, s, s + 2 * Math.PI * elapsed);
+                    cr.closePath();
+                    cr.fill();
+                }
+            } else if (this._routineActive) {
+                // Routine mode: blue (open) or red (blocked) draining pie
+                cr.arc(cx, cy, r, 0, 2 * Math.PI);
+                cr.setSourceRGB(1, 1, 1);
+                cr.fill();
+
+                let routineRemaining = Math.max(0, this._routineEndsAt - now);
+                let routineTotal = this._routineEndsAt - this._routineStartAt;
+                let fraction = routineTotal > 0
+                    ? Math.min(1, routineRemaining / routineTotal) : 1;
+
+                if (this._routineType === 'blocked')
+                    cr.setSourceRGB(0.85, 0.15, 0.15);
+                else
+                    cr.setSourceRGB(0.20, 0.50, 0.90);
+
+                if (fraction >= 1.0) {
+                    cr.arc(cx, cy, r - 2, 0, 2 * Math.PI);
+                    cr.fill();
+                } else if (fraction > 0) {
+                    let s = -Math.PI / 2;
+                    cr.moveTo(cx, cy);
+                    cr.arc(cx, cy, r - 2, s, s + 2 * Math.PI * fraction);
                     cr.closePath();
                     cr.fill();
                 }
