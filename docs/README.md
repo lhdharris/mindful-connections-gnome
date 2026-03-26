@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="splash.png" alt="Mindful Connections — hand-drawn overview" width="480">
-</p>
-
 # Mindful Connections — GNOME Proof of Concept
 
 > **Open-source proof of concept for GNOME Shell.**
