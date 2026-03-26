@@ -9,7 +9,7 @@
 
 ## What it does
 
-Mindful Connections enforces intentional internet use by requiring a short pause before web browsing is allowed. HTTP/HTTPS traffic (ports 80 and 443) is blocked at the `iptables` level. Everything else — email, SSH, background updates — is unaffected.
+Mindful Connections enforces intentional internet use by requiring a short pause before web browsing is allowed.
 
 ### Timer flow
 
