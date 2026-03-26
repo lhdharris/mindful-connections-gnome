@@ -4,8 +4,6 @@
 > A timer-gated internet access system built as a native GNOME extension + Python backend — no third-party GUI framework required.
 >
 > 100% vibe coded. I'm an ideas man — feel free to improve the concept.
->
-> A full cross-platform version (Linux, Windows, macOS) exists as a separate private project.
 
 ---
 
