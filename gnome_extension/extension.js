@@ -57,6 +57,9 @@ function _readConfig() {
                     ? d.long_break_sessions : DEFAULT_LONG_BREAK_SESSIONS,
                 long_break_seconds: d.long_break_seconds !== undefined
                     ? d.long_break_seconds : DEFAULT_LONG_BREAK_SECS,
+                session_profiles: Array.isArray(d.session_profiles)
+                    ? d.session_profiles : [30, 60, 90],
+                planned_open_seconds: d.planned_open_seconds || null,
                 routines: Array.isArray(d.routines) ? d.routines : null,
             };
         }
@@ -67,6 +70,8 @@ function _readConfig() {
         buffer_seconds: DEFAULT_BUFFER_SECS,
         long_break_sessions: DEFAULT_LONG_BREAK_SESSIONS,
         long_break_seconds: DEFAULT_LONG_BREAK_SECS,
+        session_profiles: [30, 60, 90],
+        planned_open_seconds: null,
         routines: null,
     };
 }
@@ -76,8 +81,10 @@ function _readConfig() {
 const MindfulIndicator = GObject.registerClass(
     class MindfulIndicator extends PanelMenu.Button {
 
-        _init() {
+        _init(extension) {
             super._init(0.0, 'Mindful Connections');
+            console.error('MindfulConnections: indicator _init');
+            this._extension = extension;
 
             this._state = 'LOCKED';
             this._endsAt = 0;
@@ -105,8 +112,26 @@ const MindfulIndicator = GObject.registerClass(
                     this._stopMenuRefresh();
             });
 
-            // Intercept all clicks: Stage 0 (LOCKED) starts timer, others toggle menu
-            // (handled via vfunc_event override below)
+            // Intercept clicks. GNOME 50 uses a Clutter.ClickGesture on PanelMenu.Button
+            // that calls menu.toggle() directly — it never emits button-press-event for a
+            // signal handler to see. So disable that gesture and add our own.
+            if (this._clickGesture && typeof Clutter.ClickGesture !== 'undefined') {
+                this._clickGesture.set_enabled(false);
+                this._customClick = new Clutter.ClickGesture();
+                this._customClick.set_recognize_on_press(true);
+                this._customClick.connect('recognize', () => this._handleClick());
+                this.add_action(this._customClick);
+            } else {
+                // GNOME 45–49 fallback: signal-based
+                this.connect('button-press-event', () => this._handleClick());
+                this.connect('touch-event', (_a, event) => {
+                    if (event.type() === Clutter.EventType.TOUCH_BEGIN) {
+                        this._handleClick();
+                        return Clutter.EVENT_STOP;
+                    }
+                    return Clutter.EVENT_PROPAGATE;
+                });
+            }
 
             // Poll state file every second
             this._timerId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 1, () => {
@@ -117,22 +142,18 @@ const MindfulIndicator = GObject.registerClass(
             this._pollState();
         }
 
-        vfunc_event(event) {
-            let t = event.type();
-            if (t === Clutter.EventType.BUTTON_PRESS ||
-                t === Clutter.EventType.TOUCH_BEGIN) {
-                if (this._state === 'LOCKED') {
-                    if (this._routineActive && this._routineType === 'blocked')
-                        return Clutter.EVENT_STOP;
-                    this._runBackend('start');
-                    return Clutter.EVENT_STOP;
-                }
-                if (!this.menu.isOpen)
-                    this._openMenu();
-                this.menu.toggle();
-                return Clutter.EVENT_STOP;
+        _handleClick() {
+            console.error(`MindfulConnections: click (state=${this._state})`);
+            // LOCKED (and not in a blocked routine) → start the timer, suppress menu
+            if (this._state === 'LOCKED' &&
+                    !(this._routineActive && this._routineType === 'blocked')) {
+                this._runBackend('start');
+                return;
             }
-            return super.vfunc_event(event);
+            // Otherwise rebuild and toggle the menu ourselves (the default gesture is off)
+            if (!this.menu.isOpen)
+                this._openMenu();
+            this.menu.toggle();
         }
 
         // ─── Routine detection ────────────────────────────────────────────────────
@@ -270,6 +291,7 @@ const MindfulIndicator = GObject.registerClass(
         _openMenu() {
             this._stopMenuRefresh();
             this.menu.removeAll();
+            this._cfg = _readConfig();
 
             // Timer display (centered)
             this._timerItem = new PopupMenu.PopupBaseMenuItem({ reactive: false });
@@ -284,6 +306,44 @@ const MindfulIndicator = GObject.registerClass(
             this.menu.addMenuItem(this._timerItem);
 
             this._updateMenuLabels();
+
+            // ── Plan session submenu ──────────────────────────────────────────
+            if (!this._routineActive && this._state === 'OPEN') {
+                const profiles = (this._cfg.session_profiles || [30, 60, 90])
+                    .filter(m => m > 0);
+                if (profiles.length > 0) {
+                    this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+                    const planned = this._cfg.planned_open_seconds;
+                    const sub = new PopupMenu.PopupSubMenuMenuItem('Plan session');
+                    for (const mins of profiles) {
+                        const isPlanned = planned === mins * 60;
+                        const item = new PopupMenu.PopupMenuItem(
+                            (isPlanned ? '✓ ' : '') + `${mins} min`
+                        );
+                        item.connect('activate', () => this._planSession(mins));
+                        sub.menu.addMenuItem(item);
+                    }
+                    if (planned) {
+                        sub.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+                        const cancel = new PopupMenu.PopupMenuItem('Cancel planned session');
+                        cancel.connect('activate', () => this._cancelPlannedSession());
+                        sub.menu.addMenuItem(cancel);
+                    }
+                    this.menu.addMenuItem(sub);
+                }
+            }
+
+            // ── Settings ───────────────────────────────────────────────────────
+            this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+            const settingsItem = new PopupMenu.PopupMenuItem('Settings…');
+            settingsItem.connect('activate', () => {
+                try {
+                    this._extension?.openPreferences();
+                } catch (e) {
+                    console.error(`MindfulConnections: openPreferences failed: ${e.message}`);
+                }
+            });
+            this.menu.addMenuItem(settingsItem);
 
             // Refresh every second while open
             this._menuRefreshId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 1, () => {
@@ -327,6 +387,48 @@ const MindfulIndicator = GObject.registerClass(
                 sessionStr = `  (${current}/${total})`;
             }
             this._timerLabel.set_text(`⏲  ${timeStr} - ${stageName}${sessionStr}`);
+        }
+
+        _writeCfgPatch(patch) {
+            try {
+                let cfg = {};
+                try {
+                    const [ok, raw] = Gio.File.new_for_path(CONFIG_FILE).load_contents(null);
+                    if (ok) cfg = JSON.parse(new TextDecoder().decode(raw));
+                } catch (_e) {}
+                Object.assign(cfg, patch);
+                const bytes = new TextEncoder().encode(JSON.stringify(cfg));
+                Gio.File.new_for_path(CONFIG_FILE).replace_contents(
+                    bytes, null, false, Gio.FileCreateFlags.REPLACE_DESTINATION, null
+                );
+            } catch (e) {
+                console.error(`MindfulConnections: cfg patch failed: ${e.message}`);
+            }
+        }
+
+        _planSession(mins) {
+            this._cfg.planned_open_seconds = mins * 60;
+            this._writeCfgPatch({ planned_open_seconds: mins * 60 });
+            this.menu.close();
+        }
+
+        _cancelPlannedSession() {
+            this._cfg.planned_open_seconds = null;
+            try {
+                let cfg = {};
+                try {
+                    const [ok, raw] = Gio.File.new_for_path(CONFIG_FILE).load_contents(null);
+                    if (ok) cfg = JSON.parse(new TextDecoder().decode(raw));
+                } catch (_e) {}
+                delete cfg.planned_open_seconds;
+                const bytes = new TextEncoder().encode(JSON.stringify(cfg));
+                Gio.File.new_for_path(CONFIG_FILE).replace_contents(
+                    bytes, null, false, Gio.FileCreateFlags.REPLACE_DESTINATION, null
+                );
+            } catch (e) {
+                console.error(`MindfulConnections: cancelPlannedSession failed: ${e.message}`);
+            }
+            this.menu.close();
         }
 
         _stopMenuRefresh() {
@@ -440,15 +542,35 @@ const MindfulIndicator = GObject.registerClass(
         // ─── Backend ──────────────────────────────────────────────────────────────
 
         _runBackend(action) {
+            let proc;
             try {
-                let proc = Gio.Subprocess.new(
-                    ['sudo', 'python3', TIMER_SCRIPT, '--action', action],
-                    Gio.SubprocessFlags.NONE);
-                proc.wait_async(null, null);
+                proc = Gio.Subprocess.new(
+                    ['/usr/bin/sudo', '-n', '/usr/bin/python3', TIMER_SCRIPT,
+                     '--action', action],
+                    Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE);
             } catch (e) {
-                console.error(`MindfulConnections: backend error [${action}]: ${e.message}`);
-                Main.notify('Mindful Connections Error', 'Could not run backend. Check sudoers setup.');
+                console.error(`MindfulConnections: spawn failed [${action}]: ${e.message}`);
+                Main.notify('Mindful Connections Error',
+                    `Could not launch backend (${action}): ${e.message}`);
+                return;
             }
+            proc.communicate_utf8_async(null, null, (p, res) => {
+                let stdout = '', stderr = '';
+                try {
+                    [, stdout, stderr] = p.communicate_utf8_finish(res);
+                } catch (e) {
+                    console.error(`MindfulConnections: read failed [${action}]: ${e.message}`);
+                    return;
+                }
+                if (!p.get_successful()) {
+                    const exit = p.get_exit_status();
+                    const err = (stderr || stdout || `exit ${exit}`).trim();
+                    console.error(
+                        `MindfulConnections: backend [${action}] failed (exit ${exit}): ${err}`);
+                    Main.notify('Mindful Connections Error',
+                        `Backend ${action} failed: ${err.split('\n')[0]}`);
+                }
+            });
         }
 
         // ─── Cleanup ──────────────────────────────────────────────────────────────
@@ -467,12 +589,58 @@ const MindfulIndicator = GObject.registerClass(
 
 export default class MindfulConnectionsExtension extends Extension {
     enable() {
-        this._indicator = new MindfulIndicator();
+        console.error('MindfulConnections: enable() called');
+        // Sync GSettings to temp file on startup
+        this._syncSettingsToTempFile();
+
+        this._indicator = new MindfulIndicator(this);
         Main.panel.addToStatusArea(this.uuid, this._indicator, 1, 'right');
+        console.error('MindfulConnections: indicator added to panel');
     }
 
     disable() {
         this._indicator?.destroy();
         this._indicator = null;
+    }
+
+    _syncSettingsToTempFile() {
+        try {
+            // Get settings from GSettings
+            const settings = this.getSettings();
+
+            // Build config object from GSettings
+            const config = {
+                wait_seconds: settings.get_int('wait-seconds'),
+                open_seconds: settings.get_int('open-seconds'),
+                buffer_seconds: settings.get_int('buffer-seconds'),
+                long_break_enabled: settings.get_boolean('long-break-enabled'),
+                long_break_sessions: settings.get_int('long-break-sessions'),
+                long_break_seconds: settings.get_int('long-break-seconds'),
+                allow_local_network: settings.get_boolean('allow-local-network'),
+                session_reset_seconds: settings.get_int('session-reset-minutes') * 60,
+            };
+            const sessionProfilesStr = settings.get_string('session-profiles');
+            if (sessionProfilesStr) {
+                try { config.session_profiles = JSON.parse(sessionProfilesStr); } catch (_e) {}
+            }
+
+            // Parse routines from JSON string
+            const routinesStr = settings.get_string('routines');
+            if (routinesStr) {
+                try {
+                    config.routines = JSON.parse(routinesStr);
+                } catch (_e) {
+                    config.routines = null;
+                }
+            }
+
+            // Write to temp file for backend
+            const bytes = new TextEncoder().encode(JSON.stringify(config));
+            const file = Gio.File.new_for_path(CONFIG_FILE);
+            file.replace_contents(bytes, null, false, Gio.FileCreateFlags.REPLACE_DESTINATION, null);
+
+        } catch (e) {
+            console.error(`MindfulConnections: Failed to sync settings: ${e.message}`);
+        }
     }
 }

@@ -40,10 +40,16 @@ sudo rm -f "$SLEEP_HOOK_DST"
 sudo rm -f "$SUDOERS_FILE"
 
 # Remove installed backend and state files
-echo "[5/5] Removing installed backend..."
+echo "[5/5] Removing installed backend and cleaning up..."
 rm -rf "$INSTALL_DIR"
 sudo rm -f /tmp/mindful_connections_state.json
 sudo rm -f /tmp/mindful_connections_config.json
+
+# Reset GSettings to defaults (if schema is still available)
+if command -v gsettings >/dev/null 2>&1 && gsettings list-schemas | grep -q "org.gnome.shell.extensions.mindful-connections"; then
+    echo "      Resetting extension settings..."
+    gsettings reset-recursively org.gnome.shell.extensions.mindful-connections 2>/dev/null || true
+fi
 
 echo ""
 echo "Uninstalled. Restart GNOME Shell to complete removal."

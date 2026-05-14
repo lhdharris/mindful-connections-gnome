@@ -1,0 +1,18 @@
+# Compiled schemas
+gschemas.compiled
+*.gschema.valid
+
+# Temporary state files
+/tmp/mindful_connections_*.json
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~

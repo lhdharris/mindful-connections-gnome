@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.mindful-connections" path="/org/gnome/shell/extensions/mindful-connections/">
+    <!-- Session timing -->
+    <key name="wait-seconds" type="i">
+      <default>60</default>
+      <summary>Warm-up duration in seconds</summary>
+      <description>Time to wait before internet opens</description>
+      <range min="60" max="3600"/>
+    </key>
+    
+    <key name="open-seconds" type="i">
+      <default>1200</default>
+      <summary>Open browsing duration in seconds</summary>
+      <description>How long the internet stays open</description>
+      <range min="60" max="7200"/>
+    </key>
+    
+    <key name="buffer-seconds" type="i">
+      <default>60</default>
+      <summary>Cool-down duration in seconds</summary>
+      <description>Buffer time after session ends</description>
+      <range min="0" max="1800"/>
+    </key>
+    
+    <!-- Long break settings -->
+    <key name="long-break-enabled" type="b">
+      <default>true</default>
+      <summary>Enable long breaks</summary>
+      <description>After several sessions, extend the cool-down for a longer rest</description>
+    </key>
+    
+    <key name="long-break-sessions" type="i">
+      <default>3</default>
+      <summary>Sessions before long break</summary>
+      <description>Number of sessions before a long break</description>
+      <range min="1" max="20"/>
+    </key>
+    
+    <key name="long-break-seconds" type="i">
+      <default>1200</default>
+      <summary>Long break duration in seconds</summary>
+      <description>Duration of the long break</description>
+      <range min="60" max="7200"/>
+    </key>
+    
+    <!-- Network access -->
+    <key name="allow-local-network" type="b">
+      <default>false</default>
+      <summary>Allow local network during blocks</summary>
+      <description>Keep LAN (RFC 1918) and Tailscale (100.64.0.0/10) accessible even when internet is blocked</description>
+    </key>
+
+    <!-- Session profiles for "Plan session" menu -->
+    <key name="session-profiles" type="s">
+      <default>"[30,60,90,0,0]"</default>
+      <summary>Session profile durations in minutes</summary>
+      <description>JSON array of up to 5 durations (minutes); 0 disables that slot</description>
+    </key>
+
+    <!-- Session counter reset -->
+    <key name="session-reset-minutes" type="i">
+      <default>60</default>
+      <summary>Session counter reset after inactivity (minutes)</summary>
+      <description>Reset the session counter to zero if LOCKED for longer than this many minutes</description>
+      <range min="0" max="1440"/>
+    </key>
+
+    <!-- Routines stored as JSON string -->
+    <key name="routines" type="s">
+      <default>""</default>
+      <summary>Routine schedule</summary>
+      <description>JSON array of daily routine slots</description>
+    </key>
+  </schema>
+</schemalist>

@@ -6,7 +6,10 @@
         "45",
         "46",
         "47",
-        "48"
+        "48",
+        "49",
+        "50"
     ],
-    "url": "https://github.com/google-deepmind"
+    "url": "https://github.com/google-deepmind",
+    "settings-schema": "org.gnome.shell.extensions.mindful-connections"
 }

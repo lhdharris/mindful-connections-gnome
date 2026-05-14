@@ -6,9 +6,11 @@ import abc
 import os
 import shutil
 
+LAN_RANGES = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10"]
+
 class FirewallController(abc.ABC):
     @abc.abstractmethod
-    def block(self):
+    def block(self, allow_local_network: bool = False):
         pass
 
     @abc.abstractmethod
@@ -44,13 +46,18 @@ class NftablesController(FirewallController):
         )
         return result.returncode, (result.stdout + result.stderr).strip()
 
-    def block(self):
+    def block(self, allow_local_network: bool = False):
         # Delete any existing table so we start clean (ignore errors)
         self._run([self._find_nft(), "delete", "table", "ip", self.TABLE])
+        lan_rule = ""
+        if allow_local_network:
+            cidrs = ", ".join(LAN_RANGES)
+            lan_rule = f"        ip daddr {{ {cidrs} }} accept\n"
         script = (
             f"table ip {self.TABLE} {{\n"
             f"    chain output {{\n"
             f"        type filter hook output priority 0; policy accept;\n"
+            f"{lan_rule}"
             f"        tcp dport {{ 80, 443 }} reject with tcp reset\n"
             f"        udp dport 443 reject\n"
             f"    }}\n"
@@ -97,15 +104,22 @@ class LinuxController(FirewallController):
         code, _ = self._run([ipt, "-C", "OUTPUT"] + rule)
         return code == 0
 
-    def block(self):
+    def block(self, allow_local_network: bool = False):
         ipt = self._find_iptables()
+        # Insert REJECT rules first, then ACCEPT rules (which end up at top, before REJECTs)
         for rule in self.RULES:
             if not self._rule_exists(rule):
                 self._run([ipt, "-I", "OUTPUT"] + rule)
+        if allow_local_network:
+            for cidr in LAN_RANGES:
+                rule = ["-d", cidr, "-j", "ACCEPT"]
+                if not self._rule_exists(rule):
+                    self._run([ipt, "-I", "OUTPUT"] + rule)
 
     def unblock(self):
         ipt = self._find_iptables()
-        for rule in self.RULES:
+        all_rules = list(self.RULES) + [["-d", cidr, "-j", "ACCEPT"] for cidr in LAN_RANGES]
+        for rule in all_rules:
             for _ in range(5):
                 if self._rule_exists(rule):
                     self._run([ipt, "-D", "OUTPUT"] + rule)
@@ -174,11 +188,19 @@ class MacController(FirewallController):
         )
         return self.RULE_CONTENT_TCP in res.stdout
 
+def _have_nft() -> bool:
+    if shutil.which("nft"):
+        return True
+    return any(os.path.exists(p) for p in ("/usr/sbin/nft", "/sbin/nft"))
+
+
 def get_controller() -> FirewallController:
     os_name = platform.system()
     if os_name == "Linux":
-        # Prefer nftables (default on Debian 12+, Ubuntu 22.04+); fall back to iptables.
-        if shutil.which("nft"):
+        # Prefer nftables (default on Debian 12+, Ubuntu 22.04+, openSUSE, Fedora);
+        # fall back to iptables. shutil.which alone misses /usr/sbin when invoked
+        # with a slim PATH (e.g. some sudo configurations).
+        if _have_nft():
             return NftablesController()
         return LinuxController()
     elif os_name == "Windows":

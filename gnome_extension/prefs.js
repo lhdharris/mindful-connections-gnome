@@ -34,9 +34,13 @@ export default class MindfulConnectionsPreferences extends ExtensionPreferences 
     fillPreferencesWindow(window) {
         window.set_default_size(540, 660);
 
+        // GSettings — source of truth that survives extension reload.
+        this._settings = this.getSettings();
+
         // Routines data: _routines[day][slot], initialised before the grid is built
         // so toggle callbacks always have a valid target.
         this._routines = Array.from({length: 7}, () => new Array(48).fill(false));
+        this._sessionRows = [];
         this._isOpen   = false;
 
         const page = new Adw.PreferencesPage({
@@ -103,6 +107,29 @@ export default class MindfulConnectionsPreferences extends ExtensionPreferences 
             adjustment: new Gtk.Adjustment({ lower: 1, upper: 120, step_increment: 1 }),
         });
         longBreakGroup.add(this._longBreakDurRow);
+
+        // ── Session profiles ────────────────────────────────────────────────────
+
+        this._sessionsGroup = new Adw.PreferencesGroup({
+            title: 'Plan Session Profiles',
+            description: 'Quick durations shown in the "Plan session" submenu when a session is open. Add, edit, or remove them.',
+        });
+        page.add(this._sessionsGroup);
+
+        this._addSessionRow = new Adw.ActionRow({
+            title: 'Add session profile',
+            subtitle: 'Up to 10 entries',
+        });
+        this._addSessionBtn = new Gtk.Button({
+            icon_name: 'list-add-symbolic',
+            valign: Gtk.Align.CENTER,
+            css_classes: ['flat'],
+            tooltip_text: 'Add a new session profile',
+        });
+        this._addSessionBtn.connect('clicked', () => this._addSessionProfile(15));
+        this._addSessionRow.add_suffix(this._addSessionBtn);
+        this._addSessionRow.activatable_widget = this._addSessionBtn;
+        this._sessionsGroup.add(this._addSessionRow);
 
         // ── Routines ─────────────────────────────────────────────────────────────
 
@@ -292,6 +319,7 @@ export default class MindfulConnectionsPreferences extends ExtensionPreferences 
                     long_break_enabled:   d.long_break_enabled   !== undefined ? d.long_break_enabled   : true,
                     long_break_sessions:  d.long_break_sessions  !== undefined ? d.long_break_sessions  : DEFAULT_LONG_BREAK_SESSIONS,
                     long_break_seconds:   d.long_break_seconds   !== undefined ? d.long_break_seconds   : DEFAULT_LONG_BREAK_SECS,
+                    session_profiles:     Array.isArray(d.session_profiles) ? d.session_profiles : null,
                     routines:             Array.isArray(d.routines) ? d.routines : null,
                 };
             }
@@ -303,8 +331,72 @@ export default class MindfulConnectionsPreferences extends ExtensionPreferences 
             long_break_enabled:  true,
             long_break_sessions: DEFAULT_LONG_BREAK_SESSIONS,
             long_break_seconds:  DEFAULT_LONG_BREAK_SECS,
+            session_profiles:    null,
             routines:            null,
         };
+    }
+
+    _readSessionProfiles(cfg) {
+        // Prefer GSettings (survives extension reload); fall back to temp config.
+        try {
+            const raw = this._settings.get_string('session-profiles');
+            if (raw) {
+                const parsed = JSON.parse(raw);
+                if (Array.isArray(parsed)) return parsed.filter(m => Number(m) > 0);
+            }
+        } catch (_e) {}
+        if (Array.isArray(cfg.session_profiles))
+            return cfg.session_profiles.filter(m => Number(m) > 0);
+        return [30, 60, 90];
+    }
+
+    _addSessionProfile(mins) {
+        if (this._sessionRows.length >= 10) return;
+        const row = new Adw.SpinRow({
+            title: `Session ${this._sessionRows.length + 1}`,
+            subtitle: 'Duration in minutes',
+            adjustment: new Gtk.Adjustment({
+                lower: 1, upper: 240, step_increment: 1, value: mins,
+            }),
+        });
+        const delBtn = new Gtk.Button({
+            icon_name: 'edit-delete-symbolic',
+            valign: Gtk.Align.CENTER,
+            css_classes: ['flat'],
+            tooltip_text: 'Remove this profile',
+        });
+        delBtn.connect('clicked', () => this._removeSessionProfile(row));
+        row.add_suffix(delBtn);
+        row._delBtn = delBtn;
+        row.sensitive = this._isOpen;
+        delBtn.sensitive = this._isOpen;
+        // Insert before the "Add session" row.
+        this._sessionsGroup.remove(this._addSessionRow);
+        this._sessionsGroup.add(row);
+        this._sessionsGroup.add(this._addSessionRow);
+        this._sessionRows.push(row);
+        this._updateAddSessionState();
+    }
+
+    _removeSessionProfile(row) {
+        const idx = this._sessionRows.indexOf(row);
+        if (idx < 0) return;
+        this._sessionRows.splice(idx, 1);
+        this._sessionsGroup.remove(row);
+        this._renumberSessionRows();
+        this._updateAddSessionState();
+    }
+
+    _renumberSessionRows() {
+        this._sessionRows.forEach((row, i) => { row.title = `Session ${i + 1}`; });
+    }
+
+    _updateAddSessionState() {
+        const canAdd = this._isOpen && this._sessionRows.length < 10;
+        this._addSessionBtn.sensitive = canAdd;
+        this._addSessionRow.subtitle = this._sessionRows.length >= 10
+            ? 'Limit reached (10)'
+            : 'Up to 10 entries';
     }
 
     _loadValues() {
@@ -316,6 +408,14 @@ export default class MindfulConnectionsPreferences extends ExtensionPreferences 
         this._longBreakEnabledRow.active  = cfg.long_break_enabled;
         this._longBreakSessionsRow.value  = cfg.long_break_sessions;
         this._longBreakDurRow.value       = Math.round(cfg.long_break_seconds / 60);
+
+        // Rebuild session-profile rows.
+        for (const row of [...this._sessionRows])
+            this._sessionsGroup.remove(row);
+        this._sessionRows = [];
+        for (const mins of this._readSessionProfiles(cfg))
+            this._addSessionProfile(Number(mins) || 15);
+        this._updateAddSessionState();
 
         // Rebuild routines from config (0=off, 1=open, 2=blocked).
         // Old boolean configs: true→1, false/missing→0.
@@ -357,6 +457,12 @@ export default class MindfulConnectionsPreferences extends ExtensionPreferences 
         this._updateLongBreakSensitivity();
         this._saveBtn.sensitive = this._isOpen;
 
+        for (const row of this._sessionRows) {
+            row.sensitive = this._isOpen;
+            if (row._delBtn) row._delBtn.sensitive = this._isOpen;
+        }
+        this._updateAddSessionState();
+
         for (const slotBtns of this._routineBtns)
             for (const btn of slotBtns)
                 btn.sensitive = this._isOpen;
@@ -375,19 +481,46 @@ export default class MindfulConnectionsPreferences extends ExtensionPreferences 
 
     _saveConfig() {
         try {
-            const cfg = {
+            const sessionProfiles = this._sessionRows
+                .map(r => Number(r.value) || 0)
+                .filter(m => m > 0);
+
+            // Merge into existing temp config so we don't drop fields written
+            // by other code paths (e.g. planned_open_seconds).
+            let existing = {};
+            try {
+                const [ok, raw] = Gio.File.new_for_path(CONFIG_FILE).load_contents(null);
+                if (ok) existing = JSON.parse(new TextDecoder().decode(raw)) || {};
+            } catch (_e) {}
+
+            const cfg = Object.assign(existing, {
                 wait_seconds:        this._waitRow.value * 60,
                 open_seconds:        this._openRow.value * 60,
                 buffer_seconds:      this._bufferRow.value * 60,
                 long_break_enabled:  this._longBreakEnabledRow.active,
                 long_break_sessions: this._longBreakSessionsRow.value,
                 long_break_seconds:  this._longBreakDurRow.value * 60,
+                session_profiles:    sessionProfiles,
                 routines:            this._routines,
-            };
+            });
             const bytes = new TextEncoder().encode(JSON.stringify(cfg));
             Gio.File.new_for_path(CONFIG_FILE).replace_contents(
                 bytes, null, false, Gio.FileCreateFlags.REPLACE_DESTINATION, null
             );
+
+            // Persist to GSettings so values survive extension reload.
+            try {
+                this._settings.set_int('wait-seconds',        this._waitRow.value * 60);
+                this._settings.set_int('open-seconds',        this._openRow.value * 60);
+                this._settings.set_int('buffer-seconds',      this._bufferRow.value * 60);
+                this._settings.set_boolean('long-break-enabled', this._longBreakEnabledRow.active);
+                this._settings.set_int('long-break-sessions', this._longBreakSessionsRow.value);
+                this._settings.set_int('long-break-seconds',  this._longBreakDurRow.value * 60);
+                this._settings.set_string('session-profiles', JSON.stringify(sessionProfiles));
+                this._settings.set_string('routines',         JSON.stringify(this._routines));
+            } catch (e) {
+                console.error(`MindfulConnections prefs: GSettings save failed: ${e.message}`);
+            }
             this._saveBtn.label = 'Saved!';
             this._saveBtn.remove_css_class('suggested-action');
             this._saveBtn.add_css_class('success');

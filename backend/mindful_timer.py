@@ -29,11 +29,12 @@ CONFIG_FILE = os.path.join(BASE_DIR, "mindful_connections_config.json")
 PID_FILE    = os.path.join(BASE_DIR, "mindful_connections_daemon.pid")
 BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 
-DEFAULT_WAIT_SECS          = 1 * 60
-DEFAULT_OPEN_SECS          = 20 * 60
-DEFAULT_BUFFER_SECS        = 1 * 60
-DEFAULT_LONG_BREAK_SESSIONS = 3
-DEFAULT_LONG_BREAK_SECS    = 20 * 60
+DEFAULT_WAIT_SECS            = 1 * 60
+DEFAULT_OPEN_SECS            = 20 * 60
+DEFAULT_BUFFER_SECS          = 1 * 60
+DEFAULT_LONG_BREAK_SESSIONS  = 3
+DEFAULT_LONG_BREAK_SECS      = 20 * 60
+DEFAULT_SESSION_RESET_SECS   = 60 * 60
 
 
 # ─── Config ──────────────────────────────────────────────────────────────────
@@ -43,23 +44,30 @@ def read_config() -> dict:
         try:
             with open(CONFIG_FILE) as f:
                 data = json.load(f)
+            planned = data.get("planned_open_seconds")
             return {
                 "wait_seconds":          int(data.get("wait_seconds",          DEFAULT_WAIT_SECS)),
                 "open_seconds":          int(data.get("open_seconds",          DEFAULT_OPEN_SECS)),
                 "buffer_seconds":        int(data.get("buffer_seconds",        DEFAULT_BUFFER_SECS)),
                 "long_break_sessions":   int(data.get("long_break_sessions",   DEFAULT_LONG_BREAK_SESSIONS)),
                 "long_break_seconds":    int(data.get("long_break_seconds",    DEFAULT_LONG_BREAK_SECS)),
+                "allow_local_network":   bool(data.get("allow_local_network",  False)),
+                "planned_open_seconds":  int(planned) if planned else None,
                 "routines":              data.get("routines"),
+                "session_reset_seconds": int(data.get("session_reset_seconds", DEFAULT_SESSION_RESET_SECS)),
             }
         except Exception:
             pass
     return {
-        "wait_seconds":        DEFAULT_WAIT_SECS,
-        "open_seconds":        DEFAULT_OPEN_SECS,
-        "buffer_seconds":      DEFAULT_BUFFER_SECS,
-        "long_break_sessions": DEFAULT_LONG_BREAK_SESSIONS,
-        "long_break_seconds":  DEFAULT_LONG_BREAK_SECS,
-        "routines":            None,
+        "wait_seconds":          DEFAULT_WAIT_SECS,
+        "open_seconds":          DEFAULT_OPEN_SECS,
+        "buffer_seconds":        DEFAULT_BUFFER_SECS,
+        "long_break_sessions":   DEFAULT_LONG_BREAK_SESSIONS,
+        "long_break_seconds":    DEFAULT_LONG_BREAK_SECS,
+        "allow_local_network":   False,
+        "planned_open_seconds":  None,
+        "routines":              None,
+        "session_reset_seconds": DEFAULT_SESSION_RESET_SECS,
     }
 
 
@@ -132,10 +140,14 @@ def read_state() -> dict:
     return {"state": "LOCKED", "ends_at": 0, "total_seconds": DEFAULT_WAIT_SECS}
 
 
-def write_state(state: str, ends_at: float = 0.0, total_seconds: float = 0.0, session_count: int = 0) -> None:
+def write_state(state: str, ends_at: float = 0.0, total_seconds: float = 0.0,
+                session_count: int = 0, locked_at: float = None) -> None:
+    data = {"state": state, "ends_at": ends_at, "total_seconds": total_seconds,
+            "session_count": session_count}
+    if locked_at is not None:
+        data["locked_at"] = locked_at
     with open(STATE_FILE, "w") as f:
-        json.dump({"state": state, "ends_at": ends_at, "total_seconds": total_seconds,
-                   "session_count": session_count}, f)
+        json.dump(data, f)
     try:
         os.chmod(STATE_FILE, 0o644)
     except Exception:
@@ -143,10 +155,30 @@ def write_state(state: str, ends_at: float = 0.0, total_seconds: float = 0.0, se
 
 
 
+# ─── Planned session ─────────────────────────────────────────────────────────
+
+def _consume_planned_session() -> int | None:
+    """Return planned_open_seconds from config and remove it so it fires only once."""
+    if not os.path.exists(CONFIG_FILE):
+        return None
+    try:
+        with open(CONFIG_FILE) as f:
+            data = json.load(f)
+        planned = data.pop("planned_open_seconds", None)
+        if planned is not None:
+            with open(CONFIG_FILE, "w") as f:
+                json.dump(data, f)
+            return int(planned)
+    except Exception:
+        pass
+    return None
+
+
 # ─── Internet control ─────────────────────────────────────────────────────────
 
 def block_internet() -> None:
-    get_controller().block()
+    cfg = read_config()
+    get_controller().block(allow_local_network=cfg.get("allow_local_network", False))
 
 
 def unblock_internet(retries: int = 3) -> None:
@@ -254,15 +286,24 @@ def _run_daemon_impl() -> None:
     _reconcile_firewall(state)
 
     if state == "WARM_UP":
-        # Wait out the cooldown
+        # Wait out the warm-up period
         ends_at   = state_data.get("ends_at", 0)
         remaining = ends_at - time.time()
         if remaining > 0:
             time.sleep(remaining)
 
-        # Cooldown over — unlock browsing
+        # Re-read state: the sleep hook may have called lock_down() while we slept.
+        current_state = read_state().get("state")
+        if current_state != "WARM_UP":
+            print(f"[mindful] warm-up interrupted (state is now {current_state}) — staying locked",
+                  file=sys.stderr)
+            block_internet()
+            return
+
+        # Warm-up over — unlock browsing
         cfg           = read_config()
-        open_secs     = cfg["open_seconds"]
+        planned       = _consume_planned_session()
+        open_secs     = planned if planned and planned > 0 else cfg["open_seconds"]
         open_until    = time.time() + open_secs
         session_count = state_data.get("session_count", 0)
         write_state("OPEN", open_until, total_seconds=open_secs, session_count=session_count)
@@ -333,7 +374,7 @@ def lock_down(session_count: int = None) -> None:
     block_internet()
     if session_count is None:
         session_count = read_state().get("session_count", 0)
-    write_state("LOCKED", 0, total_seconds=0, session_count=session_count)
+    write_state("LOCKED", 0, total_seconds=0, session_count=session_count, locked_at=time.time())
 
 
 # ─── Start action ─────────────────────────────────────────────────────────────
@@ -366,6 +407,11 @@ def action_start(in_process: bool = False) -> None:
     wait_secs     = cfg["wait_seconds"]
     ends_at       = time.time() + wait_secs
     session_count = state_data.get("session_count", 0)
+
+    reset_secs = cfg.get("session_reset_seconds", DEFAULT_SESSION_RESET_SECS)
+    locked_at  = state_data.get("locked_at", 0)
+    if reset_secs > 0 and locked_at > 0 and (time.time() - locked_at) > reset_secs:
+        session_count = 0
 
     write_state("WARM_UP", ends_at, total_seconds=wait_secs, session_count=session_count)
     block_internet()

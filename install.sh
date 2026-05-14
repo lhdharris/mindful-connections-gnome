@@ -21,12 +21,32 @@ echo ""
 
 # 0. Check / install dependencies
 echo "[0/7] Checking dependencies..."
+
+# nft typically lives in /usr/sbin, which isn't on a normal user PATH on
+# openSUSE/Fedora — look directly so we don't reinstall what's already there.
+have_nft() {
+    command -v nft >/dev/null 2>&1 || [ -x /usr/sbin/nft ] || [ -x /sbin/nft ]
+}
+
 MISSING_PKGS=()
 command -v python3 >/dev/null 2>&1 || MISSING_PKGS+=("python3")
-command -v nft     >/dev/null 2>&1 || MISSING_PKGS+=("nftables")
+have_nft || MISSING_PKGS+=("nftables")
+
 if [ ${#MISSING_PKGS[@]} -gt 0 ]; then
     echo "      Installing missing packages: ${MISSING_PKGS[*]}"
-    sudo apt-get install -y "${MISSING_PKGS[@]}"
+    if   command -v zypper   >/dev/null 2>&1; then
+        sudo zypper --non-interactive install "${MISSING_PKGS[@]}"
+    elif command -v dnf      >/dev/null 2>&1; then
+        sudo dnf install -y "${MISSING_PKGS[@]}"
+    elif command -v apt-get  >/dev/null 2>&1; then
+        sudo apt-get install -y "${MISSING_PKGS[@]}"
+    elif command -v pacman   >/dev/null 2>&1; then
+        sudo pacman -S --noconfirm "${MISSING_PKGS[@]}"
+    else
+        echo "      ERROR: no supported package manager (zypper/dnf/apt-get/pacman) found."
+        echo "      Please install: ${MISSING_PKGS[*]}"
+        exit 1
+    fi
 else
     echo "      Dependencies OK (python3, nftables)."
 fi
@@ -48,6 +68,10 @@ if [ -L "$EXT_DEST" ] || [ -d "$EXT_DEST" ]; then
 fi
 ln -s "$EXT_SOURCE" "$EXT_DEST"
 echo "      Linked: $EXT_DEST -> $EXT_SOURCE"
+
+# 2b. Compile GSettings schema
+echo "      Compiling GSettings schema..."
+glib-compile-schemas "$EXT_SOURCE/schemas/" || true
 
 # 3. Add sudoers entry (passwordless sudo for the timer script only)
 echo "[3/7] Setting up sudoers (will prompt for your password)..."
